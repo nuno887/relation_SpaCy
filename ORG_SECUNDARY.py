@@ -1,16 +1,3 @@
-# gazette_pipeline_structural.py
-# Structural-first extractor for gazette-like texts (Portuguese):
-# - ORG headers: multi-line, started by "starter" words; continuation lines use grammar-based cues
-# - ORG_SECUNDARIA: first post-header lines with enough content or followed by company-level DOCs
-# - DOC labels: section-level & company-level (e.g., "Contrato de sociedade")
-# - Relations:
-#     ORG --SECTION_ITEM--> DOC
-#     ORG --CONTAINS--> ORG_SECUNDARIA
-#     ORG_SECUNDARIA --HAS_DOCUMENT--> DOC
-#
-# Usage:
-#   python gazette_pipeline_structural.py input.txt
-#   cat input.txt | python gazette_pipeline_structural.py
 
 import sys
 import re
@@ -50,6 +37,12 @@ RX_CONTRATO_SOC = re.compile(r"(?is)\bcontrato\s*de\s*sociedade\b")
 # Optional “institutional” starters for secondary orgs (used inside sections)
 SECONDARY_STARTERS = {"INSTITUTO", "ASSOCIAÇÃO", "ASSOCIACAO", "CLUBE", "FUNDAÇÃO", "FUNDACAO", "DIREÇÃO", "DIRECÇÃO"}
 
+# Content nouns that commonly appear on continuation lines of multi-line headers
+CONTINUATION_CONTENT_NOUNS = {
+    "PLANO", "FINANÇAS", "FINANCAS", "EDUCAÇÃO", "EDUCACAO", "RECURSOS", "HUMANOS",
+    "CULTURA", "TURISMO", "TRANSPORTES", "AMBIENTE", "ASSUNTOS", "SOCIAIS"
+}
+
 
 # ---------------- Normalization & helpers ----------------
 def normalize_text(s: str) -> str:
@@ -82,7 +75,7 @@ def starts_with_header_starter(line: str) -> bool:
     first = first_alpha_word_upper(up)
     if first in HEADER_STARTERS:
         return True
-    # also allow presence of multiword starters inside the line start (e.g., "PRESIDÊNCIA DO GOVERNO")
+    # allow multiword starters at the very beginning (e.g., "PRESIDÊNCIA DO GOVERNO")
     return any(up.startswith(s) for s in HEADER_STARTERS)
 
 def is_blank(line: str) -> bool:
@@ -97,10 +90,7 @@ def is_doc_label_line(line: str) -> bool:
     if head in DOC_LABELS_SECTION:
         return True
     # numbered forms like "DESPACHO n.º 59/2012"
-    if head.startswith("DESPACHO") or head.startswith("DECLARAÇÃO") or head.startswith("DECLARACAO") \
-       or head.startswith("RETIFICAÇÃO") or head.startswith("RECTIFICAÇÃO") or head.startswith("AVISO") \
-       or head.startswith("AVISOS") or head.startswith("EDITAL") or head.startswith("ANÚNCIO") \
-       or head.startswith("ANUNCIO"):
+    if head.startswith(("DESPACHO", "DECLARAÇÃO", "DECLARACAO", "RETIFICAÇÃO", "RECTIFICAÇÃO", "AVISO", "AVISOS", "EDITAL", "ANÚNCIO", "ANUNCIO")):
         if any(nm in head for nm in ("N.º", "Nº", "N°", "N.O", "N.O.")):
             return True
     # contrato de sociedade
@@ -114,23 +104,28 @@ def content_token_count(line: str) -> int:
     return sum(1 for t in toks_up if t not in STOPWORDS_UP)
 
 def is_header_continuation(prev_line: str, curr_line: str) -> bool:
-    """Continuation cues: current starts with stopword and has content nouns; or prev ends with connector/comma/hyphen."""
+    """Continuation cues: current starts with stopword + has content nouns; or prev ends with connector/comma/hyphen."""
     if is_blank(curr_line):
         return False
     curr_up = strip(curr_line).upper()
-    # starts with a function word and has content after
     parts = curr_up.split()
+
+    # starts with a function word and has content after
     if parts and parts[0] in STOPWORDS_UP and content_token_count(curr_up) >= 1:
         return True
+
     # previous ends with a joiner/comma/hyphen
     prev_up = strip(prev_line).upper()
     if prev_up.endswith((" E", " DO", " DA", " DE", " DOS", " DAS")):
         return True
     if prev_up.endswith((",", "-", "–")):
         return True
-    # domain nouns after a stopword (e.g., "DO PLANO E FINANÇAS")
-    if parts and parts[0] in STOPWORDS_UP and any(w in curr_up for w in ("PLANO", "FINAN", "CULTURA", "TURISMO", "TRANSPORT", "AMBIENTE", "RECURSOS")):
-        return True
+
+    # domain nouns after a stopword (e.g., "DO PLANO E FINANÇAS", "E DOS ASSUNTOS SOCIAIS")
+    if parts and parts[0] in STOPWORDS_UP:
+        if any(noun in curr_up for noun in CONTINUATION_CONTENT_NOUNS):
+            return True
+
     return False
 
 def looks_like_secondary_start(line: str) -> bool:
@@ -139,12 +134,14 @@ def looks_like_secondary_start(line: str) -> bool:
     if not up:
         return False
     first = first_alpha_word_upper(up)
-    if first in SECONDARY_STARTERS:
-        return True
-    return False
+    return first in SECONDARY_STARTERS
+
+def collapse_ws_for_display(text: str) -> str:
+    """Collapse internal whitespace/newlines for pretty printing."""
+    return " ".join(text.split())
 
 
-# ---------------- Span builders ----------------
+# ---------------- Span builder ----------------
 def char_span(doc: Doc, start: int, end: int, label: str) -> Optional[Span]:
     sp = doc.char_span(start, end, label=label, alignment_mode="expand")
     return sp if sp and sp.text.strip() else None
@@ -158,10 +155,9 @@ def detect_entities(doc: Doc) -> List[Span]:
 
     i = 0
     state = "OUTSIDE"
-    # temp header block boundaries
     header_start = None
     header_end = None
-    max_header_lines = 3  # safe cap
+    max_header_lines = 4  # bumped to safely cover 3-line headers
 
     def close_header(at_index: int):
         nonlocal header_start, header_end, spans
@@ -185,15 +181,16 @@ def detect_entities(doc: Doc) -> List[Span]:
                 header_start = start
                 header_end = end
                 header_lines = 1
-                # try to absorb up to max_header_lines with continuation cues
+                # absorb up to max_header_lines with continuation cues
                 j = i + 1
+                prev_ln = ln
                 while j < len(lines) and header_lines < max_header_lines:
                     _, end_j, ln_j = lines[j]
                     if is_blank(ln_j) or is_doc_label_line(ln_j) or starts_with_header_starter(ln_j):
                         break
-                    if is_header_continuation(ln, ln_j):
+                    if is_header_continuation(prev_ln, ln_j):
                         header_end = end_j
-                        ln = ln_j  # update prev for next continuation check
+                        prev_ln = ln_j
                         header_lines += 1
                         j += 1
                     else:
@@ -215,20 +212,22 @@ def detect_entities(doc: Doc) -> List[Span]:
         if state == "IN_SECTION":
             if i >= len(lines):
                 break
-            # Check for start of a new ORG header
+
+            # Start of a new ORG header?
             if not is_blank(ln) and starts_with_header_starter(ln):
                 state = "IN_ORG"
                 header_start = start
                 header_end = end
                 header_lines = 1
                 j = i + 1
+                prev_ln = ln
                 while j < len(lines) and header_lines < max_header_lines:
                     _, end_j, ln_j = lines[j]
                     if is_blank(ln_j) or is_doc_label_line(ln_j) or starts_with_header_starter(ln_j):
                         break
-                    if is_header_continuation(ln, ln_j):
+                    if is_header_continuation(prev_ln, ln_j):
                         header_end = end_j
-                        ln = ln_j
+                        prev_ln = ln_j
                         header_lines += 1
                         j += 1
                     else:
@@ -238,7 +237,7 @@ def detect_entities(doc: Doc) -> List[Span]:
                 state = "IN_SECTION"
                 continue
 
-            # If DOC line
+            # DOC line
             if is_doc_label_line(ln):
                 sp = char_span(doc, start, end, "DOC")
                 if sp:
@@ -269,23 +268,20 @@ def detect_entities(doc: Doc) -> List[Span]:
                         la += 1
 
             if promote_secondary:
-                sp = char_span(doc, start, end, "ORG_SECUNDARIA")
+                # emit secondary; allow one continuation line if the next is plain text within section
+                n_start, n_end = start, end
+                if (i + 1) < len(lines):
+                    n2_start, n2_end, n2_ln = lines[i + 1]
+                    if not is_blank(n2_ln) and not starts_with_header_starter(n2_ln) and not is_doc_label_line(n2_ln):
+                        n_end = n2_end
+                        i += 1  # consume continuation
+                sp = char_span(doc, n_start, n_end, "ORG_SECUNDARIA")
                 if sp:
-                    # Merge with one continuation line if not header/doc and non-empty
-                    if (i + 1) < len(lines):
-                        n_start, n_end, n_ln = lines[i + 1]
-                        if not is_blank(n_ln) and not starts_with_header_starter(n_ln) and not is_doc_label_line(n_ln):
-                            # simple continuation join (common wrapped names)
-                            sp2 = char_span(doc, start, n_end, "ORG_SECUNDARIA")
-                            if sp2:
-                                spans.append(sp2)
-                                i += 2
-                                continue
                     spans.append(sp)
                 i += 1
                 continue
 
-            # Otherwise, not header, not doc, not secondary → skip (plain text)
+            # Otherwise, skip (plain text)
             i += 1
             continue
 
@@ -354,20 +350,24 @@ def extract_doc_block(doc_obj: Doc, doc_ent_end: int) -> str:
 def print_output(doc: Doc) -> None:
     print("Entities:")
     for e in sorted(doc.ents, key=lambda x: (x.start_char, -x.end_char)):
-        print(f"{e.text}  ->  {e.label_}")
+        label = e.label_
+        txt = collapse_ws_for_display(e.text) if label == "ORG" else e.text
+        print(f"{txt}\n  ->  {label}")
 
     print("\nRelations:")
     print(f"{'HEAD':<70} {'TAIL':<60} {'RELATION'}")
     print("-" * 140)
     for r in doc._.relations:
-        print(f"{r['head']['text']:<70} {r['tail']['text']:<60} {r['relation']}")
+        head = collapse_ws_for_display(r['head']['text']) if r['head']['label'] == "ORG" else r['head']['text']
+        tail = collapse_ws_for_display(r['tail']['text']) if r['tail']['label'] == "ORG" else r['tail']['text']
+        print(f"{head:<70} {tail:<60} {r['relation']}")
 
     print("\nDOC blocks:")
     for r in doc._.relations:
         if r["tail"]["label"] == "DOC":
             tail_end = r["tail_offsets"]["end"]
             snippet = extract_doc_block(doc, tail_end)
-            print("\nHEAD:", r["head"]["text"])
+            print("\nHEAD:", collapse_ws_for_display(r["head"]["text"]) if r["head"]["label"] == "ORG" else r["head"]["text"])
             print("DOC :", r["tail"]["text"])
             print("TEXT:")
             print(snippet)
@@ -390,7 +390,42 @@ def process_text(raw_text: str) -> None:
     print_output(doc)
 
 
+content_01 = """
 
+CARTÓRIO NOTA RIALERNES TO C. SANTO S
+ADCC ASSOCIAÇÃO DE DESENVOLV I M E N TO CIENTÍFICO EM CIRURGIA
+Constituição de associação
+ADIMRAM - ASSOCIAÇÃO DE DELEGADOS DE INFORMAÇÃO MÉDICA D A
+MADEIRA
+Constituição de associação
+ASSOCIAÇÃO REGIONALDE ADMINISTRAÇÃO EDUCACIONAL
+Constituição de associação
+CLUBE DESPORTIVO CORT I C E I R A S
+Constituição de associação
+4º CARTÓRIO NOTARIALDO FUNCHAL
+CLUBE DESPORTIVO DAE S C O L A FRANCISCO FRANCO
+Constituição de associação
+CARTÓRIO NOTARIAL ERNESTO C. SANTOS
+CLUBE JUDO BRAVA
+Constituição de associação
+T E ATRO EXPERIMENTA L DO FUNCHAL
+Constituição de associação
+C A RTÓRIO NOTA R I A L LIC. GABRIELJ. R. FERNANDES
+ASSOCIAÇÃO ESQUADRÃO MARITIMISTA
+Constituição de associação
+ASSOCIAÇÃO MADEIRENSE DE BILHAR
+Constituição de associação
+CLUBE ESCOLA D AL E VA D A( C E L )
+Constituição de associação
+C A RTÓRIO NOTA R I A LLIC. MANUEL F I G U E I R A DE A N D R A D E
+ASSOCIAÇÃO DE ANIMAÇÃO "GERINGONÇA”
+Constituição de associação
+FEDERAÇÃO DOS BOMBEIROS DA REGIÃO AUTÓNOMA DA MADEIRA
+Constituição de associação
+MEMÓRIAS GASTRONÓMICAS - ASSOCIAÇÃO CULT U R A L
+Constituição de associação
+
+"""
 content="""
 VICE-PRESIDÊNCIA DO GOVERNO REGIONAL
 Rectificação
