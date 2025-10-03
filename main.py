@@ -6,6 +6,8 @@ from entities import normalize_text, detect_entities, print_output
 from relations import build_relations
 import segmenter
 
+from body_refind import build_body_via_sumario_spacy
+
 
 def run_pipeline(raw_text: str, show_debug: bool = False):
     """Return (doc, sumario, body_items) for a raw input string."""
@@ -22,7 +24,9 @@ def run_pipeline(raw_text: str, show_debug: bool = False):
     build_relations(doc)
 
     # 3) segmentation (from segmenter.py)
-    sumario, body_items = segmenter.build_sumario_and_body(doc, include_local_details=False)
+    sumario, _ = segmenter.build_sumario_and_body(doc, include_local_details=False)
+
+    body_items = build_body_via_sumario_spacy(doc,sumario, include_local_details=False)
 
     if show_debug:
         # optional: your existing entities/relations debug
