@@ -6,6 +6,8 @@ from typing import List, Tuple, Optional
 import spacy
 from spacy.tokens import Doc, Span
 
+from relations import build_relations
+
 
 # ---------------- Config ----------------
 HEADER_STARTERS = {
@@ -212,10 +214,10 @@ def detect_entities(doc: Doc) -> List[Span]:
                 state = "IN_SECTION"
                 continue
             else:
-                if is_doc_label_line(ln):
-                    sp = char_span(doc, start, end, "DOC")
-                    if sp:
-                        spans.append(sp)
+ #               if is_doc_label_line(ln):
+  #                  sp = char_span(doc, start, end, "DOC")
+   #                if sp:
+   #                     spans.append(sp)
                 i += 1
                 continue
 
@@ -309,6 +311,23 @@ def print_output(doc: Doc) -> None:
         label = e.label_
         txt = collapse_ws_for_display(e.text) if label == "ORG" else e.text
         print(f"{txt}\n  ->  {label}")
+    
+    print("\nRelations:")
+    for rel in doc._.relations:
+        head_label = rel["head"]["label"]
+        head_text  = rel["head"]["text"]
+        tail_label = rel["tail"]["label"]
+        tail_text  = rel["tail"]["text"]
+        relation   = rel["relation"]
+
+        # keep ORG pretty (collapsed whitespace), like you did for entities
+        if head_label == "ORG":
+            head_text = collapse_ws_for_display(head_text)
+        if tail_label == "ORG":
+            tail_text = collapse_ws_for_display(tail_text)
+
+        print(f"{head_label} -> {tail_label} {relation} | {head_text} -> {tail_text}")
+
 
 
 # ---------------- Runner ----------------
@@ -321,45 +340,12 @@ def process_text(raw_text: str) -> None:
     # Detect entities with structural rules
     doc.ents = detect_entities(doc)
 
+    build_relations(doc)
+
     # Print output (relations intentionally omitted for now)
     print_output(doc)
 
-content_01 = """
 
-CARTÓRIO NOTA RIALERNES TO C. SANTO S
-ADCC ASSOCIAÇÃO DE DESENVOLV I M E N TO CIENTÍFICO EM CIRURGIA
-Constituição de associação
-ADIMRAM - ASSOCIAÇÃO DE DELEGADOS DE INFORMAÇÃO MÉDICA D A
-MADEIRA
-Constituição de associação
-ASSOCIAÇÃO REGIONALDE ADMINISTRAÇÃO EDUCACIONAL
-Constituição de associação
-CLUBE DESPORTIVO CORT I C E I R A S
-Constituição de associação
-4º CARTÓRIO NOTARIALDO FUNCHAL
-CLUBE DESPORTIVO DAE S C O L A FRANCISCO FRANCO
-Constituição de associação
-CARTÓRIO NOTARIAL ERNESTO C. SANTOS
-CLUBE JUDO BRAVA
-Constituição de associação
-T E ATRO EXPERIMENTA L DO FUNCHAL
-Constituição de associação
-C A RTÓRIO NOTA R I A L LIC. GABRIELJ. R. FERNANDES
-ASSOCIAÇÃO ESQUADRÃO MARITIMISTA
-Constituição de associação
-ASSOCIAÇÃO MADEIRENSE DE BILHAR
-Constituição de associação
-CLUBE ESCOLA D AL E VA D A( C E L )
-Constituição de associação
-C A RTÓRIO NOTA R I A LLIC. MANUEL F I G U E I R A DE A N D R A D E
-ASSOCIAÇÃO DE ANIMAÇÃO "GERINGONÇA”
-Constituição de associação
-FEDERAÇÃO DOS BOMBEIROS DA REGIÃO AUTÓNOMA DA MADEIRA
-Constituição de associação
-MEMÓRIAS GASTRONÓMICAS - ASSOCIAÇÃO CULT U R A L
-Constituição de associação
-
-"""
 content="""
 VICE-PRESIDÊNCIA DO GOVERNO REGIONAL
 Rectificação
@@ -378,6 +364,7 @@ MADIGAB - GABINETE DE ENGENHARIAE FISCALIZAÇÃO DE OBRAS DA
 MADEIRA, LIMITADA
 Contrato de sociedade
 RALNEC - VESTUÁRIO, LIMITADA
+Contrato de sociedade
 Contrato de sociedade
 
 """
@@ -450,5 +437,88 @@ de Equipamentos e Infraestruturas para exercer as funções de motorista do Gabi
 da Secretária Regional de Inclusão, Trabalho e Juventude.
 """
 
-process_text(content_01)
+content_04 ="""
+VICE-PRESIDÊNCIA DO GOVERNO REGIONAL
+Rectificação
+SECRETARIAREGIONAL DOS RECURSOS HUMANOS
+Avisos
+SECRETARIAREGIONAL DO TURISMO E CULTURA
+Avisos
+SECRETARIAREGIONAL DO EQUIPAMENTO SOCIAL E TRANSPORTES,
+Aviso
+CONSERVATÓRIA DO REGISTO COMERCIAL DO FUNCHAL
+ACTION LASER - INFORMÁTICA, LIMITADA
+Contrato de sociedade
+JETMADEIRA - EQUIPAMENTO NÁUTICO, LIMITADA
+Contrato de sociedade
+MADIGAB - GABINETE DE ENGENHARIAE FISCALIZAÇÃO DE OBRAS DA
+MADEIRA, LIMITADA
+Contrato de sociedade
+RALNEC - VESTUÁRIO, LIMITADA
+Contrato de sociedade
+SECRETARIA REGIONAL DO PLANO E FINANÇAS
+BALMES - CONSULTADORIA E SERVIÇOS, SOCIEDADE UNIPESSOAL, LDA.
+Revogação n.º 39/2014
+Revogação de despacho de autorização para o exercício de atividades da sociedade
+BASCITRUS INTERNATIONAL TRADING, SOCIEDADE UNIPESSOAL, LDA.
+Revogação n.º 40/2014
+Revogação de despacho de autorização para o exercício de atividades da sociedade
+HOPECAPE - SERVIÇOS DE CONSULTORIA, SOCIEDADE UNIPESSOAL, S.A.
+Revogação n.º 41/2014
+Revogação de despacho de autorização para o exercício de atividades da sociedade
+M. SHIPPING INVESTMENT MADEIRA, LDA.
+Revogação n.º 42/2014
+Revogação de despacho de autorização para o exercício de atividades da sociedade
+MILANIUS - INVESTIMENTOS E SERVIÇOS INTERNACIONAIS, SOCIEDADE 
+UNIPESSOAL, LDA.
+Revogação n.º 43/2014
+Revogação de despacho de autorização para o exercício de atividades da sociedade
+OLGANDRO CONSULTADORIA CONTABILÍSTICA E PROJECTOS EMPRESARIAIS, LDA.
+Revogação n.º 44/2014
+Revogação de despacho de autorização para o exercício de atividades da sociedade
+ONDYÁKA - TRANSPORTES MARÍTIMOS, SOCIEDADE UNIPESSOAL, LDA.
+Revogação n.º 45/2014
+Revogação de despacho de autorização para o exercício de atividades da sociedade
+TONNMAR - , SOCIEDADE UNIPESSOAL, LDA.
+Revogação n.º 46/2014
+Revogação de despacho de autorização para o exercício de atividades da sociedade
+SECRETARIA REGIONAL DE INCLUSÃO, TRABALHO E JUVENTUDE
+Despacho n.º 231/2025
+Nomeia a licenciada em Direito, Ana Maria Soares de Freitas, Técnica de 
+Administração Tributária e Assuntos Fiscais da Região Autónoma da Madeira, no 
+cargo de Chefe do Gabinete da Secretária Regional de Inclusão, Trabalho e 
+Juventude.
+Despacho n.º 232/2025
+Nomeia a licenciada em Gestão, Sandra Maria Balona Rodrigues, Assistente Técnica 
+da Direção Regional da Administração Pública, no cargo de Adjunta do Gabinete da 
+Secretária Regional de Inclusão, Trabalho e Juventude.
+Despacho n.º 233/2025
+Nomeia o licenciado em Gestão, Feliciano Acácio Teixeira Maciel Perestrelo, 
+Técnico Superior do Instituto de Emprego da Madeira, IP-RAM, no cargo de 
+Adjunto do Gabinete da Secretária Regional de Inclusão, Trabalho e Juventude.
+Despacho n.º 234/2025
+Nomeia o licenciado em Serviço Social, Rogério Gomes Gouveia Perneta, Técnico 
+Superior da Direção Regional da Cidadania e dos Assuntos Sociais, no cargo de 
+Adjunto do Gabinete da Secretária Regional de Inclusão, Trabalho e Juventude.
+Despacho n.º 235/2025
+Nomeia Esmeralda Maria de Sousa Fernandes, Assistente Técnica, do Instituto de 
+Segurança Social da Madeira, no cargo de Secretária Pessoal do Gabinete da 
+Secretária Regional de Inclusão, Trabalho e Juventude.
+Despacho n.º 236/2025
+Nomeia Filipa Micaela Gonçalves Correia, Coordenadora Técnica da Autoridade 
+Regional das Atividades Económicas, no cargo de Secretária Pessoal do Gabinete da 
+Secretária Regional de Inclusão, Trabalho e Juventude.
+Despacho n.º 237/2025
+Nomeia Luís Jorge de Oliveira, Assistente Operacional do Instituto de Segurança 
+Social da Madeira, IP-RAM para exercer as funções de motorista do Gabinete da 
+Secretária Regional de Inclusão, Trabalho e Juventude.
+Despacho n.º 238/2025
+Nomeia José Hilário Fernandes Teles, Assistente Operacional da Secretaria Regional 
+de Equipamentos e Infraestruturas para exercer as funções de motorista do Gabinete 
+da Secretária Regional de Inclusão, Trabalho e Juventude.
+
+"""
+
+
+process_text(content_03)
 
