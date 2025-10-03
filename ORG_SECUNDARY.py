@@ -28,10 +28,10 @@ DOC_LABELS_SECTION = {
     "DECLARAÇÃO", "DECLARACAO",
     "LISTA", "LISTAS",
     "ANÚNCIO", "ANUNCIO", "ANÚNCIO (RESUMO)", "ANUNCIO (RESUMO)",
-    "CONVOCATÓRIA", "CONVOCATORIA"
+    "CONVOCATÓRIA", "CONVOCATORIA", "REVOGAÇÃO", "REVOGACAO"
 }
 
-# Company-level doc anchor (used for look-ahead)
+# Company-level doc anchor (used for look-ahead or simple detection)
 RX_CONTRATO_SOC = re.compile(r"(?is)\bcontrato\s*de\s*sociedade\b")
 
 # Optional “institutional” starters for secondary orgs (used inside sections)
@@ -45,6 +45,11 @@ CONTINUATION_CONTENT_NOUNS = {
 
 
 # ---------------- Normalization & helpers ----------------
+
+def has_lowercase_letter(line: str) -> bool:
+    s = line.strip()
+    return any(ch.isalpha() and ch.islower() for ch in s)
+
 def normalize_text(s: str) -> str:
     s = unicodedata.normalize("NFKC", s)
     s = s.replace("\ufeff", "").replace("\u00ad", "").replace("\u200b", "")
@@ -90,7 +95,7 @@ def is_doc_label_line(line: str) -> bool:
     if head in DOC_LABELS_SECTION:
         return True
     # numbered forms like "DESPACHO n.º 59/2012"
-    if head.startswith(("DESPACHO", "DECLARAÇÃO", "DECLARACAO", "RETIFICAÇÃO", "RECTIFICAÇÃO", "AVISO", "AVISOS", "EDITAL", "ANÚNCIO", "ANUNCIO")):
+    if head.startswith(("DESPACHO", "DECLARAÇÃO", "DECLARACAO", "RETIFICAÇÃO", "RECTIFICAÇÃO", "AVISO", "AVISOS", "EDITAL", "ANÚNCIO", "ANUNCIO", "REVOGAÇÃO","REVOGACAO")):
         if any(nm in head for nm in ("N.º", "Nº", "N°", "N.O", "N.O.")):
             return True
     # contrato de sociedade
@@ -140,6 +145,18 @@ def collapse_ws_for_display(text: str) -> str:
     """Collapse internal whitespace/newlines for pretty printing."""
     return " ".join(text.split())
 
+def is_all_caps_line(line: str) -> bool:
+    """True if the line (letters only) is ALL CAPS (Unicode-aware)."""
+    s = strip(line)
+    if not s:
+        return False
+    base = unicodedata.normalize("NFKD", s)
+    base = "".join(ch for ch in base if not unicodedata.combining(ch))
+    letters = [ch for ch in base if ch.isalpha()]
+    if not letters:
+        return False
+    return all(ch == ch.upper() for ch in letters)
+
 
 # ---------------- Span builder ----------------
 def char_span(doc: Doc, start: int, end: int, label: str) -> Optional[Span]:
@@ -157,9 +174,9 @@ def detect_entities(doc: Doc) -> List[Span]:
     state = "OUTSIDE"
     header_start = None
     header_end = None
-    max_header_lines = 4  # bumped to safely cover 3-line headers
+    max_header_lines = 4  # covers 2–3 line headers safely
 
-    def close_header(at_index: int):
+    def close_header():
         nonlocal header_start, header_end, spans
         if header_start is not None and header_end is not None and header_end > header_start:
             sp = char_span(doc, header_start, header_end, "ORG")
@@ -169,19 +186,14 @@ def detect_entities(doc: Doc) -> List[Span]:
 
     while i < len(lines):
         start, end, ln = lines[i]
-        s = strip(ln)
-
         if state == "OUTSIDE":
             if is_blank(ln):
                 i += 1
                 continue
-            # New header?
-            if starts_with_header_starter(ln):
-                state = "IN_ORG"
-                header_start = start
-                header_end = end
+            if starts_with_header_starter(ln) and not has_lowercase_letter(ln):
+                # start header and absorb continuations (up to cap)
+                header_start, header_end = start, end
                 header_lines = 1
-                # absorb up to max_header_lines with continuation cues
                 j = i + 1
                 prev_ln = ln
                 while j < len(lines) and header_lines < max_header_lines:
@@ -196,12 +208,10 @@ def detect_entities(doc: Doc) -> List[Span]:
                     else:
                         break
                 i = j
-                # header closed; emit and switch to section
-                close_header(i)
+                close_header()
                 state = "IN_SECTION"
                 continue
             else:
-                # not a header, maybe DOC at top?
                 if is_doc_label_line(ln):
                     sp = char_span(doc, start, end, "DOC")
                     if sp:
@@ -209,168 +219,96 @@ def detect_entities(doc: Doc) -> List[Span]:
                 i += 1
                 continue
 
-        if state == "IN_SECTION":
-            if i >= len(lines):
-                break
-
-            # Start of a new ORG header?
-            if not is_blank(ln) and starts_with_header_starter(ln):
-                state = "IN_ORG"
-                header_start = start
-                header_end = end
-                header_lines = 1
-                j = i + 1
-                prev_ln = ln
-                while j < len(lines) and header_lines < max_header_lines:
-                    _, end_j, ln_j = lines[j]
-                    if is_blank(ln_j) or is_doc_label_line(ln_j) or starts_with_header_starter(ln_j):
-                        break
-                    if is_header_continuation(prev_ln, ln_j):
-                        header_end = end_j
-                        prev_ln = ln_j
-                        header_lines += 1
-                        j += 1
-                    else:
-                        break
-                i = j
-                close_header(i)
-                state = "IN_SECTION"
-                continue
-
-            # DOC line
-            if is_doc_label_line(ln):
-                sp = char_span(doc, start, end, "DOC")
-                if sp:
-                    spans.append(sp)
-                i += 1
-                continue
-
-            # Secondary org decision:
-            # Rule A: content tokens (ignoring stopwords) >= 4 and not header/doc
-            # Rule B: look-ahead 1–2 lines finds "Contrato de sociedade"
-            promote_secondary = False
-
-            if not is_blank(ln):
-                if content_token_count(ln) >= 4 and not starts_with_header_starter(ln):
-                    promote_secondary = True
+        # IN_SECTION
+        if starts_with_header_starter(ln) and not is_blank(ln) and not has_lowercase_letter(ln):
+            # new header
+            header_start, header_end = start, end
+            header_lines = 1
+            j = i + 1
+            prev_ln = ln
+            while j < len(lines) and header_lines < max_header_lines:
+                _, end_j, ln_j = lines[j]
+                if is_blank(ln_j) or is_doc_label_line(ln_j) or starts_with_header_starter(ln_j) or has_lowercase_letter(ln_j):
+                    break
+                if is_header_continuation(prev_ln, ln_j):
+                    header_end = end_j
+                    prev_ln = ln_j
+                    header_lines += 1
+                    j += 1
                 else:
-                    # look-ahead for contrato de sociedade
-                    lookahead_window = 2
-                    la = 1
-                    while la <= lookahead_window and (i + la) < len(lines):
-                        la_line = strip(lines[i + la][2]).upper()
-                        if RX_CONTRATO_SOC.search(la_line):
-                            promote_secondary = True
-                            break
-                        # stop lookahead at the next header/doc
-                        if starts_with_header_starter(la_line) or is_doc_label_line(la_line):
-                            break
-                        la += 1
+                    break
+            i = j
+            close_header()
+            state = "IN_SECTION"
+            continue
 
-            if promote_secondary:
-                # emit secondary; allow one continuation line if the next is plain text within section
-                n_start, n_end = start, end
-                if (i + 1) < len(lines):
-                    n2_start, n2_end, n2_ln = lines[i + 1]
-                    if not is_blank(n2_ln) and not starts_with_header_starter(n2_ln) and not is_doc_label_line(n2_ln):
-                        n_end = n2_end
-                        i += 1  # consume continuation
-                sp = char_span(doc, n_start, n_end, "ORG_SECUNDARIA")
-                if sp:
-                    spans.append(sp)
-                i += 1
-                continue
-
-            # Otherwise, skip (plain text)
+        if is_doc_label_line(ln):
+            sp = char_span(doc, start, end, "DOC")
+            if sp:
+                spans.append(sp)
             i += 1
             continue
 
-    return spacy.util.filter_spans(spans)
+        # Decide ORG_SECUNDARIA
+        promote_secondary = False
+        if not is_blank(ln) and not has_lowercase_letter(ln):
+            if content_token_count(ln) >= 4 and not starts_with_header_starter(ln):
+                promote_secondary = True
+            else:
+                # look-ahead for "Contrato de sociedade" within 2 lines
+                j = i + 1
+                steps = 0
+                while steps < 2 and j < len(lines):
+                    la_line = strip(lines[j][2]).upper()
+                    if RX_CONTRATO_SOC.search(la_line):
+                        promote_secondary = True
+                        break
+                    if starts_with_header_starter(la_line) or is_doc_label_line(la_line):
+                        break
+                    steps += 1
+                    j += 1
 
+        if promote_secondary:
+            # --- NEW: eat 0–2 continuation lines first, then create ONE span ---
+            block_start, block_end = start, end
+            j = i + 1
+            consumed = 0
+            while consumed < 2 and j < len(lines):
+                _, end_j, ln_j = lines[j]
+                if is_blank(ln_j) or starts_with_header_starter(ln_j) or is_doc_label_line(ln_j) or has_lowercase_letter(ln_j):
+                    break
+                block_end = end_j
+                j += 1
+                consumed += 1
 
-# ---------------- Relations ----------------
-Doc.set_extension("relations", default=[], force=True)
+            sp = char_span(doc, block_start, block_end, "ORG_SECUNDARIA")
+            if sp:
+                spans.append(sp)
+            i = j
+            continue
 
-def is_company_doc_label_text(s: str) -> bool:
-    up = " ".join(s.upper().split())
-    if up in {"CONTRATO DE SOCIEDADE"}:
-        return True
-    return RX_CONTRATO_SOC.search(up) is not None
+        # plain text
+        i += 1
 
-def build_relations(doc: Doc) -> None:
-    doc._.relations = []
-    ents = spacy.util.filter_spans(sorted(list(doc.ents), key=lambda e: (e.start_char, -e.end_char)))
-    current_org = None
-    current_sub = None
+    # --- NEW: dedupe exact spans, then resolve overlaps (keep longest) ---
+    seen = set()
+    uniq = []
+    for sp in spans:
+        key = (sp.start_char, sp.end_char, sp.label_)
+        if key not in seen:
+            seen.add(key)
+            uniq.append(sp)
+    return spacy.util.filter_spans(uniq)
 
-    for ent in ents:
-        if ent.label_ == "ORG":
-            current_org = ent
-            current_sub = None
-
-        elif ent.label_ == "ORG_SECUNDARIA":
-            if current_org:
-                doc._.relations.append({
-                    "head": {"text": current_org.text, "label": "ORG"},
-                    "tail": {"text": ent.text, "label": "ORG_SECUNDARIA"},
-                    "relation": "CONTAINS",
-                    "head_offsets": {"start": current_org.start_char, "end": current_org.end_char},
-                    "tail_offsets": {"start": ent.start_char, "end": ent.end_char},
-                })
-            current_sub = ent
-
-        elif ent.label_ == "DOC":
-            if current_sub and is_company_doc_label_text(ent.text):
-                doc._.relations.append({
-                    "head": {"text": current_sub.text, "label": "ORG_SECUNDARIA"},
-                    "tail": {"text": ent.text, "label": "DOC"},
-                    "relation": "HAS_DOCUMENT",
-                    "head_offsets": {"start": current_sub.start_char, "end": current_sub.end_char},
-                    "tail_offsets": {"start": ent.start_char, "end": ent.end_char},
-                })
-            elif current_org:
-                doc._.relations.append({
-                    "head": {"text": current_org.text, "label": "ORG"},
-                    "tail": {"text": ent.text, "label": "DOC"},
-                    "relation": "SECTION_ITEM",
-                    "head_offsets": {"start": current_org.start_char, "end": current_org.end_char},
-                    "tail_offsets": {"start": ent.start_char, "end": ent.end_char},
-                })
 
 
 # ---------------- Pretty print ----------------
-def extract_doc_block(doc_obj: Doc, doc_ent_end: int) -> str:
-    next_starts = [
-        e.start_char for e in doc_obj.ents
-        if e.start_char > doc_ent_end and e.label_ in ("ORG", "ORG_SECUNDARIA", "DOC")
-    ]
-    end = min(next_starts) if next_starts else len(doc_obj.text)
-    return doc_obj.text[doc_ent_end:end].strip()
-
 def print_output(doc: Doc) -> None:
     print("Entities:")
     for e in sorted(doc.ents, key=lambda x: (x.start_char, -x.end_char)):
         label = e.label_
         txt = collapse_ws_for_display(e.text) if label == "ORG" else e.text
         print(f"{txt}\n  ->  {label}")
-
-    print("\nRelations:")
-    print(f"{'HEAD':<70} {'TAIL':<60} {'RELATION'}")
-    print("-" * 140)
-    for r in doc._.relations:
-        head = collapse_ws_for_display(r['head']['text']) if r['head']['label'] == "ORG" else r['head']['text']
-        tail = collapse_ws_for_display(r['tail']['text']) if r['tail']['label'] == "ORG" else r['tail']['text']
-        print(f"{head:<70} {tail:<60} {r['relation']}")
-
-    print("\nDOC blocks:")
-    for r in doc._.relations:
-        if r["tail"]["label"] == "DOC":
-            tail_end = r["tail_offsets"]["end"]
-            snippet = extract_doc_block(doc, tail_end)
-            print("\nHEAD:", collapse_ws_for_display(r["head"]["text"]) if r["head"]["label"] == "ORG" else r["head"]["text"])
-            print("DOC :", r["tail"]["text"])
-            print("TEXT:")
-            print(snippet)
 
 
 # ---------------- Runner ----------------
@@ -383,12 +321,8 @@ def process_text(raw_text: str) -> None:
     # Detect entities with structural rules
     doc.ents = detect_entities(doc)
 
-    # Build relations
-    build_relations(doc)
-
-    # Print output
+    # Print output (relations intentionally omitted for now)
     print_output(doc)
-
 
 content_01 = """
 
@@ -448,5 +382,73 @@ Contrato de sociedade
 
 """
 
-process_text(content)
+content_02 = """
+
+SECRETARIA REGIONAL DO PLANO E FINANÇAS
+BALMES - CONSULTADORIA E SERVIÇOS, SOCIEDADE UNIPESSOAL, LDA.
+Revogação n.º 39/2014
+Revogação de despacho de autorização para o exercício de atividades da sociedade
+BASCITRUS INTERNATIONAL TRADING, SOCIEDADE UNIPESSOAL, LDA.
+Revogação n.º 40/2014
+Revogação de despacho de autorização para o exercício de atividades da sociedade
+HOPECAPE - SERVIÇOS DE CONSULTORIA, SOCIEDADE UNIPESSOAL, S.A.
+Revogação n.º 41/2014
+Revogação de despacho de autorização para o exercício de atividades da sociedade
+M. SHIPPING INVESTMENT MADEIRA, LDA.
+Revogação n.º 42/2014
+Revogação de despacho de autorização para o exercício de atividades da sociedade
+MILANIUS - INVESTIMENTOS E SERVIÇOS INTERNACIONAIS, SOCIEDADE 
+UNIPESSOAL, LDA.
+Revogação n.º 43/2014
+Revogação de despacho de autorização para o exercício de atividades da sociedade
+OLGANDRO CONSULTADORIA CONTABILÍSTICA E PROJECTOS EMPRESARIAIS, LDA.
+Revogação n.º 44/2014
+Revogação de despacho de autorização para o exercício de atividades da sociedade
+ONDYÁKA - TRANSPORTES MARÍTIMOS, SOCIEDADE UNIPESSOAL, LDA.
+Revogação n.º 45/2014
+Revogação de despacho de autorização para o exercício de atividades da sociedade
+TONNMAR - , SOCIEDADE UNIPESSOAL, LDA.
+Revogação n.º 46/2014
+Revogação de despacho de autorização para o exercício de atividades da sociedade
+"""
+
+content_03 = """
+
+SECRETARIA REGIONAL DE INCLUSÃO, TRABALHO E JUVENTUDE
+Despacho n.º 231/2025
+Nomeia a licenciada em Direito, Ana Maria Soares de Freitas, Técnica de 
+Administração Tributária e Assuntos Fiscais da Região Autónoma da Madeira, no 
+cargo de Chefe do Gabinete da Secretária Regional de Inclusão, Trabalho e 
+Juventude.
+Despacho n.º 232/2025
+Nomeia a licenciada em Gestão, Sandra Maria Balona Rodrigues, Assistente Técnica 
+da Direção Regional da Administração Pública, no cargo de Adjunta do Gabinete da 
+Secretária Regional de Inclusão, Trabalho e Juventude.
+Despacho n.º 233/2025
+Nomeia o licenciado em Gestão, Feliciano Acácio Teixeira Maciel Perestrelo, 
+Técnico Superior do Instituto de Emprego da Madeira, IP-RAM, no cargo de 
+Adjunto do Gabinete da Secretária Regional de Inclusão, Trabalho e Juventude.
+Despacho n.º 234/2025
+Nomeia o licenciado em Serviço Social, Rogério Gomes Gouveia Perneta, Técnico 
+Superior da Direção Regional da Cidadania e dos Assuntos Sociais, no cargo de 
+Adjunto do Gabinete da Secretária Regional de Inclusão, Trabalho e Juventude.
+Despacho n.º 235/2025
+Nomeia Esmeralda Maria de Sousa Fernandes, Assistente Técnica, do Instituto de 
+Segurança Social da Madeira, no cargo de Secretária Pessoal do Gabinete da 
+Secretária Regional de Inclusão, Trabalho e Juventude.
+Despacho n.º 236/2025
+Nomeia Filipa Micaela Gonçalves Correia, Coordenadora Técnica da Autoridade 
+Regional das Atividades Económicas, no cargo de Secretária Pessoal do Gabinete da 
+Secretária Regional de Inclusão, Trabalho e Juventude.
+Despacho n.º 237/2025
+Nomeia Luís Jorge de Oliveira, Assistente Operacional do Instituto de Segurança 
+Social da Madeira, IP-RAM para exercer as funções de motorista do Gabinete da 
+Secretária Regional de Inclusão, Trabalho e Juventude.
+Despacho n.º 238/2025
+Nomeia José Hilário Fernandes Teles, Assistente Operacional da Secretaria Regional 
+de Equipamentos e Infraestruturas para exercer as funções de motorista do Gabinete 
+da Secretária Regional de Inclusão, Trabalho e Juventude.
+"""
+
+process_text(content_01)
 
