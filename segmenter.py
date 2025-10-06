@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import List, Dict, Tuple, Optional
 from spacy.tokens import Doc, Span
-from models import Sumario, BodyItem
+from models import Sumario
 
 # -------- helpers --------
 def _collapse_ws(s: str) -> str:
@@ -58,102 +58,78 @@ def _find_body_start_with_first_repeated_org(doc: Doc) -> int:
     return len(doc.text)
 
 # -------- main API --------
-def build_sumario_and_body(doc: Doc, include_local_details: bool = False) -> tuple[Sumario, List[BodyItem]]:
+def build_sumario_and_body(doc: Doc, include_local_details: bool = False) -> Tuple[Sumario, Dict[str, object], str]:
     """
     Returns:
-      - Sumário block (text + ents + relations) for [0:cut)
-      - Body items sliced per ORG → DOC routine you specified
+      - sumario: Sumário block (text + ents + relations) for [0:cut)
+      - roster:  minimal, strings-only hand-off for Pass 2:
+                 {"cut_index": int, "orgs": [{"org_text": str,
+                                              "suborg_texts": [str, ...],
+                                              "doc_texts": [str, ...]}, ...]}
+      - body_text: original text from cut_index to EOF
     """
+    # --- Sumário (unchanged) ---
     ents = _ents_in_order(doc)
     cut = _find_body_start_with_first_repeated_org(doc)
 
-    # ----- Sumário -----
     sum_text = doc.text[:cut]
     sum_ents = _filter_ents_in_span(doc, 0, cut)
     sum_rels = _filter_relations_in_span(doc, 0, cut)
     sumario = Sumario(text=sum_text, ents=sum_ents, relations=sum_rels)
 
-    # ----- Body (ORG → DOC only) -----
-    # ORGs that start at or after the cut
-    body_orgs = [e for e in ents if e.label_ == "ORG" and e.start_char >= cut]
-    body_items: List[BodyItem] = []
-    order_idx = 1
+    # --- Roster (strings-only, ordered) ---
+    cut_index = len(sumario.text)
+    ent_text_by_offsets = {
+        (st, en, lab): txt
+        for lab, lst in sum_ents.items()
+        for (st, en, lab, txt) in lst
+    }
 
-    # Pre-collect SECTION_ITEM edges grouped by ORG offsets for quick lookup
-    org_to_docs: Dict[tuple[int, int], List[Span]] = {}
-    for r in _relations_of_type(doc, "SECTION_ITEM"):
-        head = (r["head_offsets"]["start"], r["head_offsets"]["end"])
-        d_span = _span_by_offsets(doc, r["tail_offsets"]["start"], r["tail_offsets"]["end"], "DOC")
-        if d_span:
-            org_to_docs.setdefault(head, []).append(d_span)
+    # Group Sumário relations by ORG offsets
+    org_to_sub: Dict[Tuple[int, int], List[Tuple[int, int]]] = {}
+    org_to_doc: Dict[Tuple[int, int], List[Tuple[int, int]]] = {}
+    for r in sum_rels:
+        rel = r.get("relation")
+        hs, he = r["head_offsets"]["start"], r["head_offsets"]["end"]
+        ts, te = r["tail_offsets"]["start"], r["tail_offsets"]["end"]
+        if rel == "CONTAINS":
+            org_to_sub.setdefault((hs, he), []).append((ts, te))
+        elif rel == "SECTION_ITEM":
+            org_to_doc.setdefault((hs, he), []).append((ts, te))
 
-    for i, org in enumerate(body_orgs):
-        # section end: next ORG start or EOF
-        next_starts = [o.start_char for o in body_orgs if o.start_char > org.start_char]
-        section_end = min(next_starts) if next_starts else len(doc.text)
+    for k in org_to_sub:
+        org_to_sub[k].sort(key=lambda p: p[0])
+    for k in org_to_doc:
+        org_to_doc[k].sort(key=lambda p: p[0])
 
-        # DOCs for this ORG that begin inside the section
-        docs = [d for d in org_to_docs.get((org.start_char, org.end_char), []) if org.end_char <= d.start_char < section_end]
-        docs.sort(key=lambda d: d.start_char)
+    # ORG occurrences in Sumário order (use offsets only for sorting; not returned)
+    orgs_ordered = sorted(sum_ents.get("ORG", []), key=lambda t: (t[0], -t[1]))
 
-        # Slicing routine:
-        # - First DOC: [ORG.start : next_DOC.start) or section_end if only one
-        # - Middle DOCs: [DOC_i.start : DOC_{i+1}.start)
-        # - Last DOC: [DOC_last.start : section_end)
-        if not docs:
-            continue
-
-        # First DOC
-        first = docs[0]
-        first_end = docs[1].start_char if len(docs) >= 2 else section_end
-        body_items.append(
-            _make_body_item(
-                doc=doc,
-                org=org,
-                d=first,
-                start=org.start_char,
-                end=first_end,
-                order_idx=order_idx,
-                include_local_details=include_local_details,
-            )
+    roster_orgs: List[Dict[str, object]] = []
+    for st, en, _, org_text in orgs_ordered:
+        key = (st, en)
+        sub_texts = [
+            ent_text_by_offsets.get((ts, te, "ORG_SECUNDARIA"), "")
+            for (ts, te) in org_to_sub.get(key, [])
+        ]
+        doc_texts = [
+            ent_text_by_offsets.get((ts, te, "DOC"), "")
+            for (ts, te) in org_to_doc.get(key, [])
+        ]
+        roster_orgs.append(
+            {"org_text": _collapse_ws(org_text),
+             "suborg_texts":[_collapse_ws(t) for t in sub_texts], 
+             "doc_texts": [_collapse_ws(t) for t in doc_texts],
+             }
         )
-        order_idx += 1
 
-        # Middle DOCs
-        for j in range(1, len(docs) - 1):
-            cur = docs[j]
-            nxt = docs[j + 1]
-            body_items.append(
-                _make_body_item(
-                    doc=doc,
-                    org=org,
-                    d=cur,
-                    start=cur.start_char,
-                    end=nxt.start_char,
-                    order_idx=order_idx,
-                    include_local_details=include_local_details,
-                )
-            )
-            order_idx += 1
+    roster: Dict[str, object] = {"cut_index": cut_index, "orgs": roster_orgs}
+    body_text = doc.text[cut_index:]
+    return sumario, roster, body_text
 
-        # Last DOC
-        if len(docs) >= 2:
-            last = docs[-1]
-            body_items.append(
-                _make_body_item(
-                    doc=doc,
-                    org=org,
-                    d=last,
-                    start=last.start_char,
-                    end=section_end,
-                    order_idx=order_idx,
-                    include_local_details=include_local_details,
-                )
-            )
-            order_idx += 1
 
-    return sumario, body_items
 
+"""
 def _make_body_item(
     doc: Doc,
     org: Span,
@@ -182,3 +158,4 @@ def _make_body_item(
         item.ents_in_slice = _filter_ents_in_span(doc, start, end)
         item.relations_in_slice = _filter_relations_in_span(doc, start, end)
     return item
+"""

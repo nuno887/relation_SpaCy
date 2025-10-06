@@ -6,6 +6,9 @@ from entities import normalize_text, detect_entities, print_output
 from relations import build_relations
 import segmenter
 
+print("Using segmenter from:", segmenter.__file__)
+print(segmenter.build_sumario_and_body.__name__)
+
 from body_refind import build_body_via_sumario_spacy
 
 
@@ -24,9 +27,22 @@ def run_pipeline(raw_text: str, show_debug: bool = False):
     build_relations(doc)
 
     # 3) segmentation (from segmenter.py)
-    sumario, _ = segmenter.build_sumario_and_body(doc, include_local_details=False)
+    sumario, roster, body_text = segmenter.build_sumario_and_body(doc, include_local_details=False)
+    print("Roster:", roster)
+    print()
+    print("body_text:", body_text)
 
-    body_items = build_body_via_sumario_spacy(doc,sumario, include_local_details=False)
+    # I cutted the sumario in the "build_sumario_and_body" 
+    doc = nlp.make_doc(body_text)
+
+    print("--------------------------------")
+    print("doc:", doc)
+    print("--------------------------------")
+    
+
+
+
+    body_items = build_body_via_sumario_spacy(doc, roster, include_local_details=False)
 
     if show_debug:
         # optional: your existing entities/relations debug
@@ -38,8 +54,7 @@ def run_pipeline(raw_text: str, show_debug: bool = False):
 def _preview_outputs(sumario, body_items, doc_len: int):
     print("=== SUMÁRIO ===")
     # show a short preview of the raw sumário text
-    preview = (sumario.text[:800] + ("…" if len(sumario.text) > 800 else "")).rstrip()
-    print(preview or "(empty)")
+    print(sumario or "(empty)")
     print("\nSumário ents:", {k: len(v) for k, v in sumario.ents.items()})
     print("Sumário relations:", len(sumario.relations))
 
@@ -50,16 +65,14 @@ def _preview_outputs(sumario, body_items, doc_len: int):
         print(f"[{it.order_index}] {it.org_text} :: {it.doc_title}")
         print(f"slice [{it.slice_start}:{it.slice_end}] ({it.slice_end - it.slice_start} chars)")
         # show a tiny snippet
-        body_snip = it.slice_text.replace("\n", " ").strip()
-        if len(body_snip) > 160:
-            body_snip = body_snip[:160] + "…"
-        print(body_snip or "(empty)")
+        #body_snip = it.slice_text.replace("\n", " ").strip()
+        print(it or "(empty)")
         print("-" * 60)
 
 
 
  
-input_path = Path("file_02.txt")
+input_path = Path("file_03.txt")
 raw = input_path.read_text(encoding="utf-8")
 
 doc, sumario, body_items = run_pipeline(raw_text=raw, show_debug=False)
