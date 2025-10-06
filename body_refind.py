@@ -38,6 +38,7 @@ def build_body_via_sumario_spacy(doc: Doc, roster: Dict[str, object], include_lo
     """
     Match the roster's ORG / ORG_SECUNDARIA / DOC strings in the BODY-ONLY `doc` with spaCy PhraseMatcher,
     enforce ALL-CAPS for ORG/SUBORG, assign in roster order, and slice sections by DOC anchors.
+    If no DOCs are found for an ORG, fall back to slicing by ORG_SECUNDARIA.
     """
     full_text = doc.text
 
@@ -126,7 +127,8 @@ def build_body_via_sumario_spacy(doc: Doc, roster: Dict[str, object], include_lo
                 break
         assigned_orgs.append({**b, "assigned": chosen})
 
-    # For each ORG section, assign SUBORGs and DOCs; slice sections using DOC anchors
+    # For each ORG section, assign SUBORGs and DOCs; slice sections using DOC anchors,
+    # or fall back to slicing by SUBORGs if no DOCs are present.
     body_items: List[BodyItem] = []
     order_idx = 1
 
@@ -137,17 +139,22 @@ def build_body_via_sumario_spacy(doc: Doc, roster: Dict[str, object], include_lo
         org_st, org_en = org_span
         section_end = next_org_start(i)
 
-        # SUBORGs (optional for slicing; useful if you later emit body relations)
+        # SUBORGs (collect chosen hits for fallback slicing)
+        sub_assignments: List[Tuple[int, int, str]] = []
         sub_cursor = org_st
         for sub in org_entry["suborgs"]:
             phrase = sub["text"]
             hits = [h for h in sub_cands.get(phrase, []) if org_st <= h[0] < section_end]
+            chosen = None
             for st, en in hits:
                 if st >= sub_cursor:
+                    chosen = (st, en, phrase)
                     sub_cursor = en
                     break
+            if chosen:
+                sub_assignments.append(chosen)
 
-        # DOCs drive slicing
+        # DOCs drive slicing (primary mode)
         doc_cursor = org_en
         doc_assignments: List[Tuple[int, int]] = []
         for d in org_entry["docs"]:
@@ -162,10 +169,29 @@ def build_body_via_sumario_spacy(doc: Doc, roster: Dict[str, object], include_lo
             if chosen:
                 doc_assignments.append(chosen)
 
+        # Fallback: slice by SUBORGs if there are no DOCs
         if not doc_assignments:
-            continue
+            if sub_assignments:
+                for k, (sub_st, sub_en, sub_phrase) in enumerate(sub_assignments):
+                    seg_end = sub_assignments[k + 1][0] if k + 1 < len(sub_assignments) else section_end
+                    body_items.append(BodyItem(
+                        org_text=" ".join(org_entry["org_text"].split()),
+                        org_start=org_st,
+                        org_end=org_en,
+                        section_id=org_st,
+                        doc_title=sub_phrase,               # identify the chunk by its suborg
+                        doc_start=sub_st,
+                        doc_end=sub_en,
+                        relation="CONTAINS",                # driver is suborg here
+                        slice_text=full_text[sub_st:seg_end].strip(),
+                        slice_start=sub_st,
+                        slice_end=seg_end,
+                        order_index=order_idx,
+                    ))
+                    order_idx += 1
+            continue  # move to next ORG
 
-        # First slice: [ORG.start : first DOC.start)
+        # Primary: slice by DOCs
         first_doc_st, first_doc_en = doc_assignments[0]
         first_end = (doc_assignments[1][0] if len(doc_assignments) >= 2 else section_end)
         body_items.append(BodyItem(
@@ -184,7 +210,6 @@ def build_body_via_sumario_spacy(doc: Doc, roster: Dict[str, object], include_lo
         ))
         order_idx += 1
 
-        # Middles: [DOC_i.start : DOC_{i+1}.start)
         for j in range(1, len(doc_assignments) - 1):
             cur_st, cur_en = doc_assignments[j]
             nxt_st, _ = doc_assignments[j + 1]
@@ -204,7 +229,6 @@ def build_body_via_sumario_spacy(doc: Doc, roster: Dict[str, object], include_lo
             ))
             order_idx += 1
 
-        # Last: [last DOC.start : section_end)
         if len(doc_assignments) >= 2:
             last_st, last_en = doc_assignments[-1]
             body_items.append(BodyItem(

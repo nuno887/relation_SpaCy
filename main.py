@@ -72,7 +72,7 @@ def _preview_outputs(sumario, body_items, doc_len: int):
 
 
  
-input_path = Path("file_03.txt")
+input_path = Path("file_02.txt")
 raw = input_path.read_text(encoding="utf-8")
 
 doc, sumario, body_items = run_pipeline(raw_text=raw, show_debug=False)

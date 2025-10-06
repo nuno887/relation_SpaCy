@@ -30,14 +30,14 @@ DOC_LABELS_SECTION = {
     "DECLARAÇÃO", "DECLARACAO",
     "LISTA", "LISTAS",
     "ANÚNCIO", "ANUNCIO", "ANÚNCIO (RESUMO)", "ANUNCIO (RESUMO)",
-    "CONVOCATÓRIA", "CONVOCATORIA", "REVOGAÇÃO", "REVOGACAO","CONTRATO"
+    "CONVOCATÓRIA", "CONVOCATORIA", "REVOGAÇÃO", "REVOGACAO","CONTRATO", "DECRETO", "RESOLUÇÃO", "RESOLUCAO", "DECRETO REGULAMENTAR REGIONAL", "PORTARIA"
 }
 
 # Company-level doc anchor (used for look-ahead or simple detection)
 RX_CONTRATO_SOC = re.compile(r"(?is)\bcontrato\s*de\s*sociedade\b")
 
 # Optional “institutional” starters for secondary orgs (used inside sections)
-SECONDARY_STARTERS = {"INSTITUTO", "ASSOCIAÇÃO", "ASSOCIACAO", "CLUBE", "FUNDAÇÃO", "FUNDACAO", "DIREÇÃO", "DIRECÇÃO"}
+SECONDARY_STARTERS = {"INSTITUTO", "ASSOCIAÇÃO", "ASSOCIACAO", "CLUBE", "FUNDAÇÃO", "FUNDACAO", "DIREÇÃO", "DIRECÇÃO", "CLAQUE"}
 
 # Content nouns that commonly appear on continuation lines of multi-line headers
 CONTINUATION_CONTENT_NOUNS = {
@@ -97,7 +97,7 @@ def is_doc_label_line(line: str) -> bool:
     if head in DOC_LABELS_SECTION:
         return True
     # numbered forms like "DESPACHO n.º 59/2012"
-    if head.startswith(("DESPACHO", "DECLARAÇÃO", "DECLARACAO", "RETIFICAÇÃO", "RECTIFICAÇÃO", "AVISO", "AVISOS", "EDITAL", "ANÚNCIO", "ANUNCIO", "REVOGAÇÃO","REVOGACAO","CONTRATO")):
+    if head.startswith(("DESPACHO", "DECLARAÇÃO", "DECLARACAO", "RETIFICAÇÃO", "RECTIFICAÇÃO", "AVISO", "AVISOS", "EDITAL", "ANÚNCIO", "ANUNCIO", "REVOGAÇÃO","REVOGACAO","CONTRATO","DECRETO", "RESOLUÇÃO", "RESOLUCAO", "PORTARIA")):
         if any(nm in head for nm in ("N.º", "Nº", "N°", "N.O", "N.O.")):
             return True
     # contrato de sociedade
