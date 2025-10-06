@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdf-ocr-extractor"
+version = "0.1.0"
+description = "PDF text extractor with PyMuPDF + Tesseract (Portuguese defaults)."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "pymupdf>=1.23",
+  "pillow>=10.0",
+  "pytesseract>=0.3.10",
+]
+
+[project.scripts]
+pdf-ocr-extract = "pdf_ocr_extractor.core:main"
